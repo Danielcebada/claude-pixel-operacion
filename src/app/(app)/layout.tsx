@@ -14,6 +14,7 @@ const BREADCRUMB_MAP: Record<string, string> = {
   "/vendors": "Proveedores",
   "/clients": "Clientes",
   "/settings": "Configuracion",
+  "/tickets": "Tickets IA",
 };
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {

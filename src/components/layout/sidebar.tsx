@@ -13,6 +13,7 @@ import {
   Database,
   Megaphone,
   Wallet,
+  ScanLine,
   FileText,
   FileBarChart,
   CalendarRange,
@@ -61,6 +62,7 @@ const sections: NavSection[] = [
       { name: "Centro Costos", href: "/costs", icon: Database },
       { name: "Cash Flow", href: "/cashflow", icon: Wallet },
       { name: "Recursos", href: "/resources", icon: CalendarRange },
+      { name: "Tickets IA", href: "/tickets", icon: ScanLine },
     ],
   },
   {
