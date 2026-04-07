@@ -15,6 +15,18 @@ const BREADCRUMB_MAP: Record<string, string> = {
   "/clients": "Clientes",
   "/settings": "Configuracion",
   "/tickets": "Tickets IA",
+  "/cmo": "CMO Studio",
+  "/consolidation": "Consolidacion",
+  "/finance": "Finanzas",
+  "/commissions": "Comisiones",
+  "/costs": "Centro de Costos",
+  "/cashflow": "Cash Flow",
+  "/resources": "Recursos",
+  "/marketing": "Marketing",
+  "/team": "Equipo",
+  "/reports": "Reportes",
+  "/alerts": "Alertas",
+  "/admin": "Configuracion",
 };
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {

@@ -14,6 +14,7 @@ import {
   Megaphone,
   Wallet,
   ScanLine,
+  Crown,
   FileText,
   FileBarChart,
   CalendarRange,
@@ -69,6 +70,7 @@ const sections: NavSection[] = [
     label: "MARKETING",
     icon: Megaphone,
     items: [
+      { name: "CMO Studio", href: "/cmo", icon: Crown },
       { name: "Marketing", href: "/marketing", icon: Megaphone },
       { name: "Equipo", href: "/team", icon: Trophy },
     ],
