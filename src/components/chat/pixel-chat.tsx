@@ -21,10 +21,31 @@ import {
 } from "lucide-react";
 import { formatCurrency, computeProfitability } from "@/lib/types";
 import { MOCK_PROJECTS, MOCK_USERS } from "@/lib/mock-data";
-import { MARZO_DEALS, getMarzoAnalytics, VENDEDORES, type HubspotDeal } from "@/lib/hubspot-deals";
-import { HUBSPOT_PRODUCTS, MARCH_SOURCE_ANALYSIS, PRODUCT_CATEGORIES as HS_PRODUCT_CATEGORIES } from "@/lib/hubspot-products";
 import { PRODUCTS_CATALOG } from "@/lib/products-catalog";
 import { CALENDAR_EVENTS, getWeeklyProjection } from "@/lib/calendar-ops";
+
+// ─── Mock HubSpot data (replaces removed hubspot-deals / hubspot-products imports) ──
+
+interface HubspotDeal {
+  id: string;
+  dealname: string;
+  amount: number;
+  closedate: string;
+  owner_name: string;
+}
+
+const MARZO_DEALS: HubspotDeal[] = [];
+
+function getMarzoAnalytics() {
+  return {
+    totalRevenue: 0,
+    totalDeals: 0,
+    avgTicket: 0,
+    byVendor: [] as { name: string; deals: number; revenue: number; avg: number; pct: number }[],
+    byWeek: [] as { week: string; deals: number; revenue: number }[],
+    topDeals: [] as HubspotDeal[],
+  };
+}
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -549,16 +570,8 @@ function processMessage(input: string): { content: string; table?: TableData } {
   // SALES - Source analysis
   // ──────────────────────────────────────────────────────────
   if (q.includes("fuente") || q.includes("source") || q.includes("de donde vienen") || q.includes("origen")) {
-    const src = MARCH_SOURCE_ANALYSIS;
     return {
-      content:
-        `**Fuentes de Deals - Marzo 2026** (${src.totalDealsCreated} deals creados):\n\n` +
-        `- Conversion rate: **${src.pipelineConversion.conversionRate}%**\n` +
-        `- Ganados: ${src.pipelineConversion.ganados} / Perdidos: ${src.pipelineConversion.perdidos}`,
-      table: {
-        headers: ["Fuente", "Deals"],
-        rows: Object.entries(src.sourceDetails).map(([, v]) => [(v as { label: string; count: number }).label, (v as { label: string; count: number }).count.toString()]),
-      },
+      content: "Los datos de fuentes de deals no estan disponibles en este momento. Consulta directamente HubSpot para ver el origen de los deals.",
     };
   }
 
@@ -580,21 +593,6 @@ function processMessage(input: string): { content: string; table?: TableData } {
             `- Setup: ${found.hasSetup ? fmt(found.setupCost) : "N/A"}\n` +
             `- Categoria: ${found.category}\n` +
             `- ${found.description}`,
-        };
-      }
-      // Try HubSpot products
-      const hsFound = HUBSPOT_PRODUCTS.filter((p) => fuzzyMatch(p.name, searchTerm) && !p.isMontaje).slice(0, 5);
-      if (hsFound.length > 0) {
-        return {
-          content: `Encontre **${hsFound.length}** productos en HubSpot con "${searchTerm}":`,
-          table: {
-            headers: ["Producto", "Tipo", "Costo"],
-            rows: hsFound.map((p) => [
-              p.name,
-              HS_PRODUCT_CATEGORIES[p.type]?.label || p.type,
-              p.cost > 0 ? fmt(p.cost) : "Solicitar",
-            ]),
-          },
         };
       }
       return { content: `No encontre un producto con "${searchTerm}". Intenta con otro nombre.` };
@@ -646,15 +644,15 @@ function processMessage(input: string): { content: string; table?: TableData } {
   // PRODUCTS - Cost of high cost products
   // ──────────────────────────────────────────────────────────
   if (q.includes("producto") && (q.includes("costo") || q.includes("caro") || q.includes("alto"))) {
-    const withCost = HUBSPOT_PRODUCTS.filter((p) => p.cost > 0 && !p.isMontaje).sort((a, b) => b.cost - a.cost).slice(0, 10);
+    const withCost = PRODUCTS_CATALOG.filter((p) => p.costBase > 0).sort((a, b) => b.costBase - a.costBase).slice(0, 10);
     return {
       content: "**Top 10 productos con mayor costo base:**",
       table: {
-        headers: ["Producto", "Tipo", "Costo Base"],
+        headers: ["Producto", "Categoria", "Costo Base"],
         rows: withCost.map((p) => [
           p.name,
-          HS_PRODUCT_CATEGORIES[p.type]?.label || p.type,
-          fmt(p.cost),
+          p.category,
+          fmt(p.costBase),
         ]),
       },
     };
