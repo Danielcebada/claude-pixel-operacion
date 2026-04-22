@@ -1,10 +1,10 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { MOCK_PROJECTS } from "@/lib/mock-data";
 import { formatCurrency, getMarginColor, getMarginLabel } from "@/lib/types";
-import { ArrowLeft, ExternalLink, Trash2, AlertTriangle, BookCheck, Plus, X, RotateCcw, CheckCircle2, Clock, CircleDot, Circle } from "lucide-react";
+import { ArrowLeft, ExternalLink, Trash2, AlertTriangle, BookCheck, Plus, X, RotateCcw, CheckCircle2, Clock, CircleDot, Circle, Database } from "lucide-react";
 import Link from "next/link";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -83,6 +83,60 @@ const PAYMENT_COLORS: Record<string, string> = {
   parcial: "bg-yellow-50 text-yellow-600",
   pendiente: "bg-amber-50 text-amber-600",
 };
+
+// ─── LocalStorage Persistence ────────────────────────────────────────────────
+
+interface PersistedState {
+  fin: FinancialState;
+  status: WorkflowStatus;
+  presupuestoConfirmado: boolean;
+  savedAt: number;
+}
+
+function storageKey(projectId: string): string {
+  return `pixel_project_financials_${projectId}`;
+}
+
+function loadPersisted(projectId: string): PersistedState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(storageKey(projectId));
+    if (!raw) return null;
+    return JSON.parse(raw) as PersistedState;
+  } catch {
+    return null;
+  }
+}
+
+function savePersisted(projectId: string, state: PersistedState): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(storageKey(projectId), JSON.stringify(state));
+  } catch {
+    // Ignore quota errors / serialization errors
+  }
+}
+
+function clearPersisted(projectId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(storageKey(projectId));
+  } catch {
+    // Ignore
+  }
+}
+
+function formatSecondsAgo(fromMs: number, nowMs: number): string {
+  const diffSec = Math.max(0, Math.floor((nowMs - fromMs) / 1000));
+  if (diffSec < 5) return "hace unos segundos";
+  if (diffSec < 60) return `hace ${diffSec} segundos`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `hace ${diffMin} ${diffMin === 1 ? "minuto" : "minutos"}`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `hace ${diffH} ${diffH === 1 ? "hora" : "horas"}`;
+  const diffD = Math.floor(diffH / 24);
+  return `hace ${diffD} ${diffD === 1 ? "dia" : "dias"}`;
+}
 
 function computeAll(f: FinancialState): Computed {
   const utilidad_bruta_presupuesto = f.venta_presupuesto - f.costos_presupuesto;
@@ -268,8 +322,8 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
   const router = useRouter();
   const f = project.financials;
 
-  // ── Financial state ──
-  const [fin, setFin] = useState<FinancialState>({
+  // ── Defaults pulled from MOCK_PROJECTS ──
+  const defaultFin = useMemo<FinancialState>(() => ({
     venta_presupuesto: f.venta_presupuesto,
     venta_real: f.venta_real,
     costos_presupuesto: f.costos_presupuesto,
@@ -289,7 +343,66 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
     viaticos_venta: f.viaticos_venta,
     viaticos_gasto: f.viaticos_gasto,
     viaticos_uber: f.viaticos_uber,
-  });
+  }), [f]);
+
+  const defaultStatus: WorkflowStatus =
+    project.status === "cancelado" ? "pendiente" : (project.status as WorkflowStatus);
+
+  // ── Financial state (defaults initially, hydrated from localStorage on mount) ──
+  const [fin, setFin] = useState<FinancialState>(defaultFin);
+  const [status, setStatus] = useState<WorkflowStatus>(defaultStatus);
+  const [presupuestoConfirmado, setPresupuestoConfirmado] = useState(project.presupuesto_confirmado);
+
+  // Non-persisted UI state (stays on the Project record for now)
+  const [paymentStatus, setPaymentStatus] = useState(project.payment_status);
+  const [anticipoPagado, setAnticipoPagado] = useState(project.anticipo_pagado);
+
+  // Persistence tracking
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const [, setNowTick] = useState(0);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── On mount: hydrate from localStorage merged with defaults ──
+  useEffect(() => {
+    const persisted = loadPersisted(project.id);
+    if (persisted) {
+      setFin({ ...defaultFin, ...persisted.fin });
+      if (persisted.status) setStatus(persisted.status);
+      if (typeof persisted.presupuestoConfirmado === "boolean") {
+        setPresupuestoConfirmado(persisted.presupuestoConfirmado);
+      }
+      if (persisted.savedAt) setSavedAt(persisted.savedAt);
+    }
+    setHydrated(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
+  // ── Debounced persist (500ms) whenever persisted slice changes ──
+  useEffect(() => {
+    if (!hydrated) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      const now = Date.now();
+      savePersisted(project.id, {
+        fin,
+        status,
+        presupuestoConfirmado,
+        savedAt: now,
+      });
+      setSavedAt(now);
+    }, 500);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [fin, status, presupuestoConfirmado, hydrated, project.id]);
+
+  // ── Refresh "hace X segundos" label once per second ──
+  useEffect(() => {
+    if (!savedAt) return;
+    const id = setInterval(() => setNowTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [savedAt]);
 
   const update = useCallback((key: keyof FinancialState, value: number) => {
     setFin((prev) => ({ ...prev, [key]: value }));
@@ -297,13 +410,20 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
 
   const computed = useMemo(() => computeAll(fin), [fin]);
 
-  // ── Status ──
-  const [status, setStatus] = useState<WorkflowStatus>(
-    project.status === "cancelado" ? "pendiente" : (project.status as WorkflowStatus)
-  );
-  const [paymentStatus, setPaymentStatus] = useState(project.payment_status);
-  const [anticipoPagado, setAnticipoPagado] = useState(project.anticipo_pagado);
-  const [presupuestoConfirmado, setPresupuestoConfirmado] = useState(project.presupuesto_confirmado);
+  // ── Restore originals ──
+  const handleRestoreOriginals = useCallback(() => {
+    clearPersisted(project.id);
+    setFin(defaultFin);
+    setStatus(defaultStatus);
+    setPresupuestoConfirmado(project.presupuesto_confirmado);
+    setSavedAt(null);
+  }, [project.id, defaultFin, defaultStatus, project.presupuesto_confirmado]);
+
+  // ── Mark as confirmed (persists via debounce effect) ──
+  const handleMarcarConfirmado = useCallback(() => {
+    setPresupuestoConfirmado(true);
+    setStatus((prev) => (prev === "pendiente" ? "presupuesto_confirmado" : prev));
+  }, []);
 
   // ── Commissions ──
   const isDanielVendedor = (project.vendedor_name || "").toLowerCase().includes("daniel");
@@ -416,6 +536,14 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
 
   return (
     <div className="space-y-6 pb-12 max-w-5xl">
+
+      {/* ═══ LOCAL STORAGE BANNER ═══ */}
+      <div className="flex items-start gap-2 px-3 py-2 border border-blue-200 bg-blue-50 rounded-md text-xs text-blue-700">
+        <Database className="w-4 h-4 mt-0.5 flex-shrink-0 text-blue-500" />
+        <span>
+          Datos guardados localmente. Para guardar en base de datos, configura Supabase.
+        </span>
+      </div>
 
       {/* ═══ HEADER ═══ */}
       <div className="flex items-start gap-3">
@@ -629,9 +757,57 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
 
       {/* ═══ FINANCIAL TABLE (THE STAR) ═══ */}
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-700">Estado de Resultados</h2>
-          <p className="text-xs text-gray-400 mt-0.5">Edita cualquier celda. Todo se recalcula al instante.</p>
+        <div className="px-4 py-3 border-b border-gray-100 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-700">Estado de Resultados</h2>
+            <p className="text-xs text-gray-400 mt-0.5">Edita cualquier celda. Todo se recalcula al instante.</p>
+            <div className="mt-1.5 flex items-center gap-1.5 text-[11px]">
+              {savedAt ? (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-green-500" aria-hidden />
+                  <span className="text-gray-500">Guardado {formatSecondsAgo(savedAt, Date.now())}</span>
+                </>
+              ) : (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-gray-300" aria-hidden />
+                  <span className="text-gray-400">Sin cambios guardados</span>
+                </>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 text-[11px] text-gray-500">
+              <span className="uppercase tracking-wide font-medium">Status</span>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value as WorkflowStatus)}
+                className="border border-gray-200 rounded-md px-2 py-1 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="pendiente">Pendiente</option>
+                <option value="presupuesto_confirmado">Presupuesto Confirmado</option>
+                <option value="en_operacion">En Operacion</option>
+                <option value="operado">Operado</option>
+                <option value="finalizado">Finalizado</option>
+              </select>
+            </label>
+            <button
+              onClick={handleMarcarConfirmado}
+              disabled={presupuestoConfirmado}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-green-300 text-green-700 hover:bg-green-50 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium rounded-md transition-colors"
+              title={presupuestoConfirmado ? "Presupuesto ya confirmado" : "Marcar presupuesto como confirmado"}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Marcar como confirmado
+            </button>
+            <button
+              onClick={handleRestoreOriginals}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 text-gray-600 hover:bg-gray-50 text-xs font-medium rounded-md transition-colors"
+              title="Descartar cambios locales y restaurar los valores originales"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Restaurar valores originales
+            </button>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">

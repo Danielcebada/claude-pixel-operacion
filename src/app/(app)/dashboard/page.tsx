@@ -57,12 +57,12 @@ export default function DashboardPage() {
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [, setRefreshTick] = useState(0);
 
-  // ── Auto-refresh every 2 minutes ──
+  // ── Auto-refresh every 30 minutes ──
   useEffect(() => {
     const interval = setInterval(() => {
       setLastRefresh(new Date());
       setRefreshTick((t) => t + 1);
-    }, 2 * 60 * 1000);
+    }, 30 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -169,15 +169,29 @@ export default function DashboardPage() {
     setSyncResult(null);
     try {
       const res = await fetch("/api/hubspot/sync", { method: "POST" });
-      if (res.ok) {
-        setSyncResult("Sincronizacion completada");
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.result) {
+        const { created = 0, updated = 0, totalDeals = 0 } = data.result;
+        setSyncResult(`OK - ${totalDeals} deals procesados (${created} nuevos, ${updated} actualizados)`);
+        // Refresh the view after successful sync
+        setLastRefresh(new Date());
+        setRefreshTick((t) => t + 1);
+      } else if (res.status === 401) {
+        setSyncResult("Falta configurar HUBSPOT_ACCESS_TOKEN en Vercel");
+      } else if (res.status === 500 && data.error?.includes("HUBSPOT_ACCESS_TOKEN")) {
+        setSyncResult("Falta configurar HUBSPOT_ACCESS_TOKEN en Vercel");
+      } else if (res.status === 500 && data.error?.includes("supabase")) {
+        setSyncResult("Falta configurar Supabase (correr schema.sql)");
       } else {
-        setSyncResult("Error al sincronizar");
+        setSyncResult(data.error || "Error al sincronizar");
       }
     } catch {
       setSyncResult("Error de conexion");
     } finally {
       setSyncing(false);
+      // Clear message after 10 seconds
+      setTimeout(() => setSyncResult(null), 10000);
     }
   };
 
@@ -218,10 +232,12 @@ export default function DashboardPage() {
         <div className="flex items-center gap-3">
           {syncResult && (
             <span
-              className={`text-xs font-medium px-3 py-1.5 rounded-lg ${
-                syncResult.includes("completada")
+              className={`text-xs font-medium px-3 py-1.5 rounded-lg max-w-md ${
+                syncResult.startsWith("OK")
                   ? "bg-green-100 text-green-700"
-                  : "bg-red-100 text-red-700"
+                  : syncResult.includes("Falta")
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-red-100 text-red-700"
               }`}
             >
               {syncResult}
@@ -275,7 +291,7 @@ export default function DashboardPage() {
         )}
         <div className="flex-1" />
         <span className="text-[10px] text-gray-400 flex items-center gap-1">
-          <Clock className="w-3 h-3" /> Auto-refresh cada 2 min
+          <Clock className="w-3 h-3" /> Auto-refresh cada 30 min
         </span>
       </div>
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback, DragEvent, ChangeEvent } from "react";
+import * as XLSX from "xlsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,8 +23,542 @@ import {
   Tag,
   Calculator,
   Eye,
+  Upload,
+  FileSpreadsheet,
+  CheckCircle2,
+  XCircle,
+  Trash2,
+  FileDown,
+  Info,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/types";
+
+// ─── Uploader: Types & Config ─────────────────────────────────
+type UploadType = "productos" | "proveedores" | "tarifario";
+
+interface UploadConfig {
+  label: string;
+  columns: string[];
+  uniqueKey: string;
+  templateFilename: string;
+  exampleRow: Record<string, string | number>;
+}
+
+const UPLOAD_CONFIG: Record<UploadType, UploadConfig> = {
+  productos: {
+    label: "Catalogo de Productos",
+    columns: ["codigo", "nombre", "categoria", "costo_base", "precio_venta", "stock"],
+    uniqueKey: "codigo",
+    templateFilename: "plantilla_productos.csv",
+    exampleRow: {
+      codigo: "PRD-001",
+      nombre: "360 Photo Booth",
+      categoria: "booth",
+      costo_base: 12500,
+      precio_venta: 35000,
+      stock: 3,
+    },
+  },
+  proveedores: {
+    label: "Proveedores",
+    columns: ["nombre", "tipo", "contacto", "telefono", "email", "productos"],
+    uniqueKey: "nombre",
+    templateFilename: "plantilla_proveedores.csv",
+    exampleRow: {
+      nombre: "Renta AV Solutions",
+      tipo: "AV / Pantallas",
+      contacto: "Carlos Ruiz",
+      telefono: "55-1234-5678",
+      email: "carlos@rentaav.com",
+      productos: "LED Wall; Proyectores",
+    },
+  },
+  tarifario: {
+    label: "Tarifario",
+    columns: ["producto", "modalidad", "precio_1dia", "precio_2dias", "precio_3dias", "precio_semana"],
+    uniqueKey: "producto",
+    templateFilename: "plantilla_tarifario.csv",
+    exampleRow: {
+      producto: "360 Photo Booth",
+      modalidad: "renta_operada",
+      precio_1dia: 35000,
+      precio_2dias: 55000,
+      precio_3dias: 72000,
+      precio_semana: 120000,
+    },
+  },
+};
+
+interface StoredCostsData {
+  productos: Record<string, string | number>[];
+  proveedores: Record<string, string | number>[];
+  tarifario: Record<string, string | number>[];
+  updatedAt?: string;
+}
+
+const STORAGE_KEY = "pixel_costs_data";
+
+// ─── Uploader: Helpers ─────────────────────────────────
+function loadStoredCosts(): StoredCostsData {
+  if (typeof window === "undefined") return { productos: [], proveedores: [], tarifario: [] };
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { productos: [], proveedores: [], tarifario: [] };
+    const parsed = JSON.parse(raw) as StoredCostsData;
+    return {
+      productos: parsed.productos ?? [],
+      proveedores: parsed.proveedores ?? [],
+      tarifario: parsed.tarifario ?? [],
+      updatedAt: parsed.updatedAt,
+    };
+  } catch {
+    return { productos: [], proveedores: [], tarifario: [] };
+  }
+}
+
+function saveStoredCosts(data: StoredCostsData) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...data, updatedAt: new Date().toISOString() }));
+}
+
+function downloadTemplate(type: UploadType) {
+  const cfg = UPLOAD_CONFIG[type];
+  const header = cfg.columns.join(",");
+  const exampleVals = cfg.columns.map((c) => {
+    const v = cfg.exampleRow[c];
+    if (typeof v === "string" && v.includes(",")) return `"${v}"`;
+    return v ?? "";
+  }).join(",");
+  const csv = `${header}\n${exampleVals}\n`;
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = cfg.templateFilename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function exportAllData(data: StoredCostsData) {
+  const wb = XLSX.utils.book_new();
+  (Object.keys(UPLOAD_CONFIG) as UploadType[]).forEach((type) => {
+    const rows = data[type] ?? [];
+    const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [UPLOAD_CONFIG[type].exampleRow]);
+    XLSX.utils.book_append_sheet(wb, ws, UPLOAD_CONFIG[type].label.slice(0, 31));
+  });
+  const today = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `pixel_costos_${today}.xlsx`);
+}
+
+function normalizeRows(raw: unknown[], cfg: UploadConfig): Record<string, string | number>[] {
+  return raw.map((r) => {
+    const row = r as Record<string, unknown>;
+    const normalized: Record<string, string | number> = {};
+    cfg.columns.forEach((col) => {
+      // try exact, then case/space-insensitive match
+      let val = row[col];
+      if (val === undefined || val === null) {
+        const keys = Object.keys(row);
+        const match = keys.find((k) => k.trim().toLowerCase().replace(/\s+/g, "_") === col);
+        if (match) val = row[match];
+      }
+      if (val === undefined || val === null || val === "") {
+        normalized[col] = "";
+      } else if (typeof val === "number") {
+        normalized[col] = val;
+      } else {
+        const str = String(val).trim();
+        // try numeric columns
+        if (/^(costo|precio|stock)/i.test(col) && /^-?\d+(\.\d+)?$/.test(str.replace(/[,$]/g, ""))) {
+          normalized[col] = Number(str.replace(/[,$]/g, ""));
+        } else {
+          normalized[col] = str;
+        }
+      }
+    });
+    return normalized;
+  }).filter((r) => {
+    const keyVal = r[cfg.uniqueKey];
+    return keyVal !== "" && keyVal !== undefined && keyVal !== null;
+  });
+}
+
+function mergeRows(
+  existing: Record<string, string | number>[],
+  incoming: Record<string, string | number>[],
+  uniqueKey: string,
+): { merged: Record<string, string | number>[]; added: number; updated: number } {
+  const map = new Map<string, Record<string, string | number>>();
+  existing.forEach((r) => {
+    const key = String(r[uniqueKey]).trim().toLowerCase();
+    if (key) map.set(key, r);
+  });
+
+  let added = 0;
+  let updated = 0;
+  incoming.forEach((r) => {
+    const key = String(r[uniqueKey]).trim().toLowerCase();
+    if (!key) return;
+    if (map.has(key)) {
+      map.set(key, { ...map.get(key)!, ...r });
+      updated++;
+    } else {
+      map.set(key, r);
+      added++;
+    }
+  });
+
+  return { merged: Array.from(map.values()), added, updated };
+}
+
+// ─── Uploader: Component ─────────────────────────────────
+interface UploaderFeedback {
+  kind: "success" | "error";
+  message: string;
+}
+
+function CostsUploader() {
+  const [activeType, setActiveType] = useState<UploadType>("productos");
+  const [isDragging, setIsDragging] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [preview, setPreview] = useState<Record<string, string | number>[] | null>(null);
+  const [fileName, setFileName] = useState<string>("");
+  const [feedback, setFeedback] = useState<UploaderFeedback | null>(null);
+  const [stored, setStored] = useState<StoredCostsData>({ productos: [], proveedores: [], tarifario: [] });
+  const [confirmClear, setConfirmClear] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setStored(loadStoredCosts());
+  }, []);
+
+  useEffect(() => {
+    if (!feedback) return;
+    const t = setTimeout(() => setFeedback(null), 6000);
+    return () => clearTimeout(t);
+  }, [feedback]);
+
+  const cfg = UPLOAD_CONFIG[activeType];
+
+  const resetFile = useCallback(() => {
+    setPreview(null);
+    setFileName("");
+    setProgress(0);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  const handleFile = useCallback(async (file: File) => {
+    const validExt = /\.(csv|xlsx|xls)$/i.test(file.name);
+    if (!validExt) {
+      setFeedback({ kind: "error", message: "Formato no soportado. Usa archivos .csv o .xlsx." });
+      return;
+    }
+
+    setParsing(true);
+    setProgress(10);
+    setFileName(file.name);
+    setFeedback(null);
+
+    try {
+      const buf = await file.arrayBuffer();
+      setProgress(45);
+      const wb = XLSX.read(buf, { type: "array" });
+      setProgress(70);
+      const wsName = wb.SheetNames[0];
+      if (!wsName) throw new Error("El archivo no contiene hojas");
+      const ws = wb.Sheets[wsName];
+      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
+      setProgress(88);
+      const normalized = normalizeRows(rawRows, UPLOAD_CONFIG[activeType]);
+      if (normalized.length === 0) {
+        throw new Error("No se encontraron filas validas. Revisa las columnas requeridas.");
+      }
+      setPreview(normalized);
+      setProgress(100);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Error al procesar el archivo";
+      setFeedback({ kind: "error", message: msg });
+      resetFile();
+    } finally {
+      setTimeout(() => setParsing(false), 250);
+    }
+  }, [activeType, resetFile]);
+
+  const onDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleFile(file);
+  };
+
+  const onSelectFile = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleFile(file);
+  };
+
+  const confirmImport = () => {
+    if (!preview) return;
+    const current = loadStoredCosts();
+    const { merged, added, updated } = mergeRows(current[activeType], preview, cfg.uniqueKey);
+    const next: StoredCostsData = { ...current, [activeType]: merged };
+    saveStoredCosts(next);
+    setStored(loadStoredCosts());
+    setFeedback({
+      kind: "success",
+      message: `Importacion OK en ${cfg.label}: ${added} agregados, ${updated} actualizados.`,
+    });
+    resetFile();
+  };
+
+  const cancelImport = () => {
+    resetFile();
+    setFeedback(null);
+  };
+
+  const handleClear = () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      setTimeout(() => setConfirmClear(false), 4000);
+      return;
+    }
+    localStorage.removeItem(STORAGE_KEY);
+    setStored({ productos: [], proveedores: [], tarifario: [] });
+    setConfirmClear(false);
+    setFeedback({ kind: "success", message: "Datos locales eliminados." });
+  };
+
+  const counts = {
+    productos: stored.productos.length,
+    proveedores: stored.proveedores.length,
+    tarifario: stored.tarifario.length,
+  };
+  const totalRows = counts.productos + counts.proveedores + counts.tarifario;
+
+  return (
+    <Card className="border-dashed">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Upload className="w-5 h-5 text-blue-600" />
+              Importar datos de costos
+            </CardTitle>
+            <p className="text-xs text-gray-500 mt-1">
+              Sube un archivo .csv o .xlsx. Los datos se combinan con los existentes por llave unica y se guardan en tu navegador.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="secondary" className="gap-1 bg-blue-50 text-blue-700 border-blue-200">
+              <FileSpreadsheet className="w-3 h-3" />
+              {totalRows} registros locales
+            </Badge>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1"
+              onClick={() => exportAllData(loadStoredCosts())}
+              disabled={totalRows === 0}
+            >
+              <FileDown className="w-3.5 h-3.5" /> Exportar XLSX
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className={`gap-1 ${confirmClear ? "border-red-400 text-red-600" : ""}`}
+              onClick={handleClear}
+              disabled={totalRows === 0}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {confirmClear ? "Confirmar borrar?" : "Limpiar datos"}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        {feedback && (
+          <div
+            className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
+              feedback.kind === "success"
+                ? "bg-green-50 border-green-200 text-green-800"
+                : "bg-red-50 border-red-200 text-red-800"
+            }`}
+          >
+            {feedback.kind === "success" ? (
+              <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+            ) : (
+              <XCircle className="w-4 h-4 mt-0.5 shrink-0" />
+            )}
+            <span className="flex-1">{feedback.message}</span>
+            <button
+              onClick={() => setFeedback(null)}
+              className="text-xs opacity-60 hover:opacity-100"
+              aria-label="Cerrar aviso"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        <Tabs
+          value={activeType}
+          onValueChange={(v) => {
+            setActiveType(v as UploadType);
+            resetFile();
+          }}
+        >
+          <TabsList>
+            {(Object.keys(UPLOAD_CONFIG) as UploadType[]).map((k) => (
+              <TabsTrigger key={k} value={k} className="gap-2">
+                {UPLOAD_CONFIG[k].label}
+                <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-mono">
+                  {counts[k]}
+                </Badge>
+              </TabsTrigger>
+            ))}
+          </TabsList>
+
+          {(Object.keys(UPLOAD_CONFIG) as UploadType[]).map((k) => (
+            <TabsContent key={k} value={k} className="mt-4 space-y-3">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2 text-xs text-gray-600 bg-gray-50 border rounded-lg px-3 py-2 flex-1 min-w-[260px]">
+                  <Info className="w-4 h-4 text-gray-400 shrink-0" />
+                  <span>
+                    <strong>Columnas esperadas:</strong> {UPLOAD_CONFIG[k].columns.join(", ")}
+                    <span className="text-gray-400"> - llave unica: {UPLOAD_CONFIG[k].uniqueKey}</span>
+                  </span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => downloadTemplate(k)}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Descargar plantilla
+                </Button>
+              </div>
+
+              {/* Drag & drop zone */}
+              {!preview && (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDragging(true);
+                  }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={onDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                    isDragging
+                      ? "border-blue-500 bg-blue-50"
+                      : "border-gray-300 hover:border-blue-400 hover:bg-gray-50"
+                  }`}
+                >
+                  <Upload className={`w-10 h-10 mx-auto mb-2 ${isDragging ? "text-blue-500" : "text-gray-400"}`} />
+                  <p className="text-sm font-medium text-gray-700">
+                    Arrastra tu archivo aqui o <span className="text-blue-600 underline">selecciona</span>
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Formatos: .csv, .xlsx (max 5 MB recomendado)
+                  </p>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={onSelectFile}
+                    className="hidden"
+                  />
+                </div>
+              )}
+
+              {parsing && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs text-gray-500">
+                    <span className="flex items-center gap-2">
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      Procesando {fileName}...
+                    </span>
+                    <span className="font-mono">{progress}%</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-gray-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-500 transition-all"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {preview && !parsing && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2 text-sm">
+                      <CheckCircle2 className="w-4 h-4 text-green-600" />
+                      <span className="font-medium text-gray-800">{fileName}</span>
+                      <Badge variant="secondary">{preview.length} filas detectadas</Badge>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={cancelImport}>
+                        Cancelar
+                      </Button>
+                      <Button size="sm" className="gap-1" onClick={confirmImport}>
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Confirmar importacion
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="border rounded-lg overflow-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-gray-50 border-b">
+                          {UPLOAD_CONFIG[k].columns.map((c) => (
+                            <th key={c} className="px-3 py-2 text-left font-medium text-gray-600">
+                              {c}
+                              {c === UPLOAD_CONFIG[k].uniqueKey && (
+                                <Badge variant="secondary" className="ml-1 h-3.5 px-1 text-[9px]">
+                                  llave
+                                </Badge>
+                              )}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {preview.slice(0, 5).map((row, i) => (
+                          <tr key={i} className="hover:bg-gray-50">
+                            {UPLOAD_CONFIG[k].columns.map((c) => (
+                              <td key={c} className="px-3 py-1.5 font-mono text-gray-700">
+                                {row[c] === "" ? (
+                                  <span className="text-gray-300">-</span>
+                                ) : (
+                                  String(row[c])
+                                )}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {preview.length > 5 && (
+                      <div className="text-center text-[11px] text-gray-400 py-1.5 bg-gray-50 border-t">
+                        + {preview.length - 5} filas mas (se importaran todas)
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </TabsContent>
+          ))}
+        </Tabs>
+      </CardContent>
+    </Card>
+  );
+}
 
 // ─── Mock Data: Productos/Servicios ─────────────────────────────────
 interface ProductCost {
@@ -279,6 +814,9 @@ export default function CostCenterPage() {
           </Button>
         </div>
       </div>
+
+      {/* Uploader */}
+      <CostsUploader />
 
       {/* KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
