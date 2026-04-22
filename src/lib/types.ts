@@ -213,3 +213,75 @@ export const ZONES = [
   "CDMX", "Area Metropolitana", "MTY", "GDL", "Cancun", "Queretaro",
   "Puebla", "Merida", "Acapulco", "Leon", "Torreon", "Cuernavaca", "Foraneo",
 ];
+
+// ─── Contract Types ─────────────────────────────────────────────────────────
+export type DiasCredito = "contado" | "30" | "45" | "60" | "90";
+export type EsquemaPago = "anticipo_unico" | "50_50" | "tres_facturas" | "contra_entrega";
+export type FormaPago = "transferencia" | "cheque" | "efectivo";
+
+export interface PaymentTerms {
+  diasCredito: DiasCredito;
+  esquemaPago: EsquemaPago;
+  porcentajeAnticipo: number; // 0-100
+  numeroFacturas: number; // 1-12
+  ivaPct: number; // default 16
+  retencionISR: boolean; // 10%
+  retencionIVA: boolean; // 10.67%
+  incluyeViaticos: boolean;
+  lugarEntrega: string;
+  formaPago: FormaPago;
+  penalidadCancelacionPct: number; // default 30
+}
+
+// Config captured by the wizard before producing a Contract record
+export interface ContractConfig {
+  projectId: string;
+  terms: PaymentTerms;
+}
+
+// Per-client memorized settings (persists in pixel_client_settings)
+export interface ClientSettings {
+  clientName: string;
+  rfc?: string;
+  domicilio?: string;
+  representante?: string;
+  representanteCargo?: string;
+  contacto?: string;
+  defaultTerms?: PaymentTerms;
+  updatedAt: string;
+}
+
+export const DEFAULT_PAYMENT_TERMS: PaymentTerms = {
+  diasCredito: "contado",
+  esquemaPago: "50_50",
+  porcentajeAnticipo: 50,
+  numeroFacturas: 1,
+  ivaPct: 16,
+  retencionISR: false,
+  retencionIVA: false,
+  incluyeViaticos: false,
+  lugarEntrega: "CDMX",
+  formaPago: "transferencia",
+  penalidadCancelacionPct: 30,
+};
+
+export const DIAS_CREDITO_OPTIONS: { value: DiasCredito; label: string }[] = [
+  { value: "contado", label: "Contado" },
+  { value: "30", label: "30 dias" },
+  { value: "45", label: "45 dias" },
+  { value: "60", label: "60 dias" },
+  { value: "90", label: "90 dias" },
+];
+
+export const ESQUEMA_PAGO_OPTIONS: { value: EsquemaPago; label: string; description: string }[] = [
+  { value: "anticipo_unico", label: "Anticipo unico", description: "Un solo pago al inicio" },
+  { value: "50_50", label: "2 facturas 50/50", description: "50% anticipo + 50% liquidacion" },
+  { value: "tres_facturas", label: "3 facturas", description: "Anticipo + intermedio + liquidacion" },
+  { value: "contra_entrega", label: "Pago contra entrega", description: "100% al entregar" },
+];
+
+export const FORMA_PAGO_OPTIONS: { value: FormaPago; label: string }[] = [
+  { value: "transferencia", label: "Transferencia" },
+  { value: "cheque", label: "Cheque" },
+  { value: "efectivo", label: "Efectivo" },
+];

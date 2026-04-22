@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -467,6 +468,7 @@ function AnalyticsSection({ clients }: { clients: Client[] }) {
 const VENDEDORES = ["Todos", "Pricila Dominguez", "Gabriela Gutierrez", "Samuel Hernandez", "Maria Gaytan", "Daniel Cebada"];
 
 export default function ClientsPage() {
+  const router = useRouter();
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState<"Todos" | ClientType>("Todos");
   const [filterVendedor, setFilterVendedor] = useState("Todos");
@@ -722,9 +724,15 @@ export default function ClientsPage() {
                   <TableRow
                     key={client.id}
                     className={`cursor-pointer transition-colors ${isExpanded ? "bg-blue-50/50" : "hover:bg-gray-50"}`}
-                    onClick={() => setExpandedId(isExpanded ? null : client.id)}
+                    onClick={() => router.push(`/clients/${encodeURIComponent(client.company)}`)}
                   >
-                    <TableCell className="w-8 pr-0">
+                    <TableCell
+                      className="w-8 pr-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setExpandedId(isExpanded ? null : client.id);
+                      }}
+                    >
                       {isExpanded ? (
                         <ChevronDown className="w-4 h-4 text-gray-400" />
                       ) : (

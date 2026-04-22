@@ -4,7 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { MOCK_PROJECTS } from "@/lib/mock-data";
 import { formatCurrency, getMarginColor, getMarginLabel } from "@/lib/types";
-import { ArrowLeft, ExternalLink, Trash2, AlertTriangle, BookCheck, Plus, X, RotateCcw, CheckCircle2, Clock, CircleDot, Circle, Database } from "lucide-react";
+import { ArrowLeft, ExternalLink, Trash2, AlertTriangle, BookCheck, Plus, X, RotateCcw, CheckCircle2, Clock, CircleDot, Circle, Database, FileText } from "lucide-react";
 import Link from "next/link";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -551,7 +551,16 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
           <ArrowLeft className="w-4 h-4 text-gray-400" />
         </Link>
         <div className="flex-1 min-w-0">
-          <h1 className="text-xl font-bold text-gray-900 leading-tight">{project.deal_name}</h1>
+          <div className="flex items-start justify-between gap-3">
+            <h1 className="text-xl font-bold text-gray-900 leading-tight flex-1 min-w-0">{project.deal_name}</h1>
+            <Link
+              href={`/contracts/new?projectId=${project.id}`}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-md transition-colors flex-shrink-0"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Generar Contrato
+            </Link>
+          </div>
           <div className="flex flex-wrap items-center gap-2 mt-2">
             <span className={`px-2.5 py-0.5 text-xs font-medium rounded-full ${STATUS_COLORS[status] || "bg-gray-100 text-gray-600"}`}>
               {STATUS_LABELS[status] || status}
