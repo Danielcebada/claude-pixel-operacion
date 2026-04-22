@@ -22,6 +22,7 @@ const BREADCRUMB_MAP: Record<string, string> = {
   "/costs": "Centro de Costos",
   "/cashflow": "Cash Flow",
   "/resources": "Recursos",
+  "/inventory": "Inventario",
   "/marketing": "Marketing",
   "/team": "Equipo",
   "/reports": "Reportes",

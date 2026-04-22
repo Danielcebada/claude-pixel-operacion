@@ -23,6 +23,7 @@ import { formatCurrency, computeProfitability } from "@/lib/types";
 import { MOCK_PROJECTS, MOCK_USERS } from "@/lib/mock-data";
 import { PRODUCTS_CATALOG } from "@/lib/products-catalog";
 import { CALENDAR_EVENTS, getWeeklyProjection } from "@/lib/calendar-ops";
+import { INVENTORY, searchInventory, type InventoryItem } from "@/lib/inventory-data";
 
 // ─── Mock HubSpot data (replaces removed hubspot-deals / hubspot-products imports) ──
 
@@ -140,11 +141,249 @@ function findPM(q: string): string | null {
 
 // ─── Main AI Engine ──────────────────────────────────────────
 
+// ─── Inventory helpers ───────────────────────────────────────
+
+const INVENTORY_KEYWORDS = [
+  "booth",
+  "mdf",
+  "360",
+  "photo",
+  "mirror",
+  "glambot",
+  "pixel claw",
+  "holograma",
+  "impresora",
+  "batak",
+  "oculus",
+  " vr",
+  "vr ",
+  "inventario",
+  "disponibilidad",
+  "stock",
+  "equipo",
+  "cuanto tenemos",
+  "cuantos tenemos",
+  "cuantos",
+  "disponible",
+];
+
+function isInventoryQuery(q: string): boolean {
+  return INVENTORY_KEYWORDS.some((kw) => q.includes(kw));
+}
+
+function inventoryStatusEmoji(estado: string): string {
+  const e = estado.toLowerCase();
+  if (!estado) return "";
+  if (e.includes("optimo") || e.includes("óptimo")) return "✅";
+  if (e.includes("mantenimiento")) return "🛠️";
+  if (e.includes("fuera")) return "❌";
+  if (e.includes("pendiente")) return "⏳";
+  if (e.includes("funcional")) return "🟡";
+  if (e.includes("mejora")) return "🟢";
+  return "ℹ️";
+}
+
+function extractInventorySearchTerm(q: string): string {
+  const noiseWords = [
+    "cuantos",
+    "cuanto",
+    "tenemos",
+    "hay",
+    "de",
+    "disponibilidad",
+    "disponible",
+    "disponibles",
+    "stock",
+    "inventario",
+    "equipo",
+    "equipos",
+    "el",
+    "la",
+    "los",
+    "las",
+    "un",
+    "una",
+    "unos",
+    "unas",
+    "que",
+    "cual",
+    "cuales",
+    "existen",
+    "existe",
+    "quedan",
+    "queda",
+    "?",
+    "¿",
+    "!",
+    "¡",
+    ".",
+    ",",
+  ];
+  let s = q;
+  for (const w of noiseWords) {
+    s = s.replace(new RegExp(`\\b${w}\\b`, "g"), " ");
+  }
+  return s.replace(/\s+/g, " ").trim();
+}
+
+function findInventoryMatches(q: string): InventoryItem[] {
+  const term = extractInventorySearchTerm(q);
+  // Try multi-token search first
+  if (term.length > 1) {
+    const direct = searchInventory(term);
+    if (direct.length > 0) return direct;
+  }
+  // Fall back to token-by-token matching, aggregating unique results
+  const tokens = term.split(/\s+/).filter((t) => t.length >= 3);
+  const seen = new Set<string>();
+  const results: InventoryItem[] = [];
+  for (const tk of tokens) {
+    const hits = searchInventory(tk);
+    for (const item of hits) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        results.push(item);
+      }
+    }
+  }
+  // Also try keyword-based matches like "photo" -> "Photobooth"
+  if (results.length === 0) {
+    const keywordMap: Record<string, string> = {
+      booth: "booth",
+      photo: "photobooth",
+      mdf: "mdf",
+      mirror: "mirror",
+      glambot: "glambot",
+      glam: "glambot",
+      claw: "pixel claw",
+      garrita: "pixel claw",
+      holograma: "holograma",
+      impresora: "impresora",
+      batak: "batak",
+      oculus: "oculus",
+      vr: "vr",
+      "360": "360",
+      tattoo: "tattoo",
+      coffee: "coffee",
+      totem: "totem",
+      robot: "robot",
+    };
+    for (const [kw, mapped] of Object.entries(keywordMap)) {
+      if (q.includes(kw)) {
+        const hits = searchInventory(mapped);
+        for (const item of hits) {
+          if (!seen.has(item.id)) {
+            seen.add(item.id);
+            results.push(item);
+          }
+        }
+      }
+    }
+  }
+  return results;
+}
+
+function handleInventoryQuery(
+  input: string,
+  q: string
+): { content: string; table?: TableData } {
+  const matches = findInventoryMatches(q);
+  const term = extractInventorySearchTerm(q) || input.trim();
+
+  if (matches.length === 0) {
+    // Suggest similar types
+    const availableTypes = Array.from(
+      new Set(INVENTORY.map((i) => i.type).filter((t) => t && t.length > 0 && !t.startsWith("{")))
+    ).slice(0, 12);
+    return {
+      content:
+        `No encontre equipos que coincidan con "${term}".\n\n` +
+        `**Tipos de equipo disponibles:**\n` +
+        availableTypes.map((t) => `- ${t}`).join("\n") +
+        `\n\nIntenta: "photobooth MDF", "360 XL", "glambot", "holograma", "batak", "impresora".`,
+    };
+  }
+
+  // Build a rich textual response (cap at 8 items to keep it readable)
+  const top = matches.slice(0, 8);
+  const totalExistentes = matches.reduce((s, m) => s + m.existentes, 0);
+  const totalDisponibles = matches.reduce((s, m) => s + m.disponibles, 0);
+  const totalMantenimiento = matches.reduce((s, m) => s + m.mantenimiento, 0);
+  const totalFuera = matches.reduce((s, m) => s + m.fuera_servicio, 0);
+
+  const lines: string[] = [];
+  lines.push(`Encontre **${matches.length}** resultado(s) para "${term}":`);
+  lines.push("");
+
+  for (const item of top) {
+    const emoji = inventoryStatusEmoji(item.estado);
+    const estadoLine = item.estado ? `Estado: ${emoji} ${item.estado}` : "Estado: (sin datos)";
+    lines.push(`📦 **${item.name} (x${item.existentes})**`);
+    const typeLine = item.type && !item.type.startsWith("{") ? `   Tipo: ${item.type}` : "";
+    if (typeLine) lines.push(typeLine);
+    lines.push(
+      `   Existentes: ${item.existentes} | Disponibles: ${item.disponibles} | Mantenimiento: ${item.mantenimiento} | Fuera: ${item.fuera_servicio}`
+    );
+    lines.push(`   ${estadoLine}`);
+    if (item.ultima_revision) {
+      lines.push(`   Ultima revision: ${item.ultima_revision}`);
+    }
+    if (item.imagen) {
+      const firstImg = item.imagen.split(",")[0].trim();
+      lines.push(`   Imagen: ${firstImg}`);
+    }
+    lines.push(`   [Ver en Monday](${item.monday_url})`);
+    lines.push("");
+  }
+
+  if (matches.length > top.length) {
+    lines.push(`_...y ${matches.length - top.length} resultado(s) mas en la tabla._`);
+    lines.push("");
+  }
+
+  lines.push(
+    `**Totales:** Existentes ${totalExistentes} | Disponibles ${totalDisponibles} | Mantenimiento ${totalMantenimiento} | Fuera ${totalFuera}`
+  );
+
+  const table: TableData = {
+    headers: ["Equipo", "Tipo", "Exist.", "Disp.", "Mant.", "Fuera", "Estado", "Monday"],
+    rows: matches.map((m) => [
+      m.name,
+      m.type && !m.type.startsWith("{") ? m.type : "-",
+      m.existentes.toString(),
+      m.disponibles.toString(),
+      m.mantenimiento.toString(),
+      m.fuera_servicio.toString(),
+      m.estado || "-",
+      m.monday_url,
+    ]),
+    footer: [
+      "TOTAL",
+      `${matches.length} equipo(s)`,
+      totalExistentes.toString(),
+      totalDisponibles.toString(),
+      totalMantenimiento.toString(),
+      totalFuera.toString(),
+      "",
+      "",
+    ],
+  };
+
+  return { content: lines.join("\n"), table };
+}
+
 function processMessage(input: string): { content: string; table?: TableData } {
   const q = input.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   const allProjects = getProjectsWithProfit();
   const marzoProjects = getMonthProjects(3, 2026);
   const analytics = getMarzoAnalytics();
+
+  // ──────────────────────────────────────────────────────────
+  // INVENTORY LOOKUP (priority handler)
+  // ──────────────────────────────────────────────────────────
+  if (isInventoryQuery(q)) {
+    return handleInventoryQuery(input, q);
+  }
 
   // ──────────────────────────────────────────────────────────
   // GREETINGS & HELP
