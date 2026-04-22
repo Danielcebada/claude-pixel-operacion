@@ -143,32 +143,68 @@ function findPM(q: string): string | null {
 
 // ─── Inventory helpers ───────────────────────────────────────
 
+// Specific product keywords (should trigger inventory lookup)
 const INVENTORY_KEYWORDS = [
   "booth",
   "mdf",
-  "360",
-  "photo",
-  "mirror",
+  "mirror booth",
+  "airmirror",
   "glambot",
   "pixel claw",
+  "garrita",
   "holograma",
   "impresora",
   "batak",
   "oculus",
-  " vr",
-  "vr ",
+  "multiball",
+  "salsa booth",
+  "sketch",
+  "drawme",
+  "cotton candy",
+  "snowboard",
+  "simulador",
+  "totem",
+  "mesa interactiva",
+  "mosaico",
+  "multicamara",
+  "starlink",
+  "sense step",
+  "vogue",
+  "neon room",
+  "graffiti wall",
+  "tattoo machine",
+  "reconocimiento facial",
   "inventario",
-  "disponibilidad",
   "stock",
-  "equipo",
-  "cuanto tenemos",
-  "cuantos tenemos",
-  "cuantos",
+];
+
+// Context words that, COMBINED with a product hint, trigger inventory
+const INVENTORY_CONTEXT = [
+  "disponibilidad",
   "disponible",
+  "cuantos tenemos",
+  "cuanto tenemos",
+  "hay de",
+  "cuantos hay",
+];
+
+// Product hints for combined context matching
+const PRODUCT_HINTS = [
+  "booth", "360", "mdf", "glambot", "photobooth", "photo booth",
+  "vr", "mirror", "holograma", "impresora", "batak", "multiball",
+  "pantalla", "totem", "mesa interactiva", "simulador", "oculus",
+  "sketch", "drawme", "cotton candy", "snowboard", "starlink",
+  "graffiti", "tattoo", "mosaico", "claw", "garrita",
 ];
 
 function isInventoryQuery(q: string): boolean {
-  return INVENTORY_KEYWORDS.some((kw) => q.includes(kw));
+  // Direct product keyword hit
+  if (INVENTORY_KEYWORDS.some((kw) => q.includes(kw))) return true;
+  // Context word + product hint combination
+  if (INVENTORY_CONTEXT.some((c) => q.includes(c))) {
+    return PRODUCT_HINTS.some((p) => q.includes(p));
+  }
+  return false;
 }
 
 function inventoryStatusEmoji(estado: string): string {
@@ -1247,18 +1283,31 @@ export function PixelChat() {
       setInput("");
       setIsTyping(true);
 
-      await new Promise((r) => setTimeout(r, 400 + Math.random() * 600));
+      try {
+        await new Promise((r) => setTimeout(r, 300));
 
-      const response = processMessage(userMsg.content);
-      const assistantMsg: Message = {
-        id: `a-${Date.now()}`,
-        role: "assistant",
-        content: response.content,
-        timestamp: new Date(),
-        table: response.table,
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
-      setIsTyping(false);
+        let response: { content: string; table?: TableData };
+        try {
+          response = processMessage(userMsg.content);
+        } catch (err) {
+          console.error("Chat error:", err);
+          response = {
+            content:
+              "Ups, algo fallo procesando tu pregunta. Intenta reformularla o escribe **ayuda** para ver que puedo hacer.",
+          };
+        }
+
+        const assistantMsg: Message = {
+          id: `a-${Date.now()}`,
+          role: "assistant",
+          content: response.content,
+          timestamp: new Date(),
+          table: response.table,
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+      } finally {
+        setIsTyping(false);
+      }
     },
     [isTyping]
   );
