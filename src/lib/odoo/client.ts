@@ -1,8 +1,8 @@
 // Odoo JSON-RPC Client for Odoo Online (SaaS)
 // Docs: https://www.odoo.com/documentation/17.0/developer/reference/external_api.html
 
-const ODOO_URL = process.env.ODOO_URL || "https://odoo.pixelplay.mx/odoo";
-const ODOO_DB = process.env.ODOO_DB || "pixelplay";
+const ODOO_URL = process.env.ODOO_URL || "https://odoo.pixelplay.mx";
+const ODOO_DB = process.env.ODOO_DB || "pixel_prod";
 const ODOO_USERNAME = process.env.ODOO_USERNAME || "";
 const ODOO_API_KEY = process.env.ODOO_API_KEY || "";
 
