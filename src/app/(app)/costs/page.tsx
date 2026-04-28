@@ -1,28 +1,31 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, DragEvent, ChangeEvent } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, DragEvent, ChangeEvent } from "react";
+import Link from "next/link";
 import * as XLSX from "xlsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Search,
-  Filter,
   TrendingUp,
   TrendingDown,
   Package,
   Users,
   DollarSign,
   AlertTriangle,
-  ChevronRight,
-  ArrowUpDown,
   Download,
   Plus,
   History,
   Tag,
   Calculator,
-  Eye,
   Upload,
   FileSpreadsheet,
   CheckCircle2,
@@ -30,8 +33,18 @@ import {
   Trash2,
   FileDown,
   Info,
+  FolderKanban,
+  ExternalLink,
+  Sparkles,
+  Wallet,
+  Activity,
+  TrendingUp as TrendingUpIcon,
+  AlertOctagon,
 } from "lucide-react";
-import { formatCurrency } from "@/lib/types";
+import { formatCurrency, computeProfitability, type ProjectFinancials } from "@/lib/types";
+import { MOCK_PROJECTS } from "@/lib/mock-data";
+import { loadPersistedFinancials } from "@/lib/project-financials-store";
+import ProjectCostUploader from "@/components/costs/project-cost-uploader";
 
 // ─── Uploader: Types & Config ─────────────────────────────────
 type UploadType = "productos" | "proveedores" | "tarifario";
@@ -778,11 +791,561 @@ function CotizadorRapido() {
   );
 }
 
+// ─── Costos por Proyecto ─────────────────────────────────
+type ProjectCostStatusFilter = "all" | "bajo" | "sobre" | "sin_datos" | "saludable";
+
+interface ProjectCostRow {
+  id: string;
+  deal_name: string;
+  vendedor_name: string;
+  pm_name: string;
+  event_date: string;
+  venta: number;
+  costos_real: number;
+  costos_presupuesto: number;
+  total_gastos_real: number;
+  total_gastos_presupuesto: number;
+  total_ejecutado: number;
+  total_estimado: number;
+  margen: number;
+  pct_ejecucion: number;
+  status: ProjectCostStatusFilter;
+  hubspot_deal_id?: string;
+  presupuesto_confirmado: boolean;
+  fin: ProjectFinancials;
+}
+
+function buildProjectCostRow(
+  project: (typeof MOCK_PROJECTS)[number],
+): ProjectCostRow {
+  const persisted = loadPersistedFinancials(project.id);
+  const fin: ProjectFinancials = {
+    ...project.financials,
+    ...((persisted?.fin as Partial<ProjectFinancials>) ?? {}),
+  };
+  const prof = computeProfitability(fin);
+  const total_ejecutado = fin.costos_real + prof.total_gastos_real;
+  const total_estimado = fin.costos_presupuesto + prof.total_gastos_presupuesto;
+  const venta = fin.venta_presupuesto;
+  const margen = venta > 0 ? Math.round(((venta - total_ejecutado) / venta) * 1000) / 10 : 0;
+  const pct_ejecucion = total_estimado > 0 ? Math.round((total_ejecutado / total_estimado) * 1000) / 10 : 0;
+
+  let status: ProjectCostStatusFilter = "sin_datos";
+  if (total_ejecutado === 0) {
+    status = "sin_datos";
+  } else if (total_estimado > 0 && total_ejecutado > total_estimado * 1.0) {
+    status = "sobre";
+  } else if (total_estimado > 0 && total_ejecutado < total_estimado * 0.95) {
+    status = "bajo";
+  } else {
+    status = "saludable";
+  }
+
+  return {
+    id: project.id,
+    deal_name: project.deal_name,
+    vendedor_name: project.vendedor_name ?? "—",
+    pm_name: project.pm_name ?? "—",
+    event_date: project.event_date,
+    venta,
+    costos_real: fin.costos_real,
+    costos_presupuesto: fin.costos_presupuesto,
+    total_gastos_real: prof.total_gastos_real,
+    total_gastos_presupuesto: prof.total_gastos_presupuesto,
+    total_ejecutado,
+    total_estimado,
+    margen,
+    pct_ejecucion,
+    status,
+    hubspot_deal_id: project.hubspot_deal_id,
+    presupuesto_confirmado: project.presupuesto_confirmado,
+    fin,
+  };
+}
+
+const PROJECT_STATUS_LABELS: Record<ProjectCostStatusFilter, string> = {
+  all: "Todos",
+  bajo: "Bajo presupuesto",
+  saludable: "En linea",
+  sobre: "Sobre presupuesto",
+  sin_datos: "Sin datos",
+};
+
+const PROJECT_STATUS_TONE: Record<ProjectCostStatusFilter, string> = {
+  all: "bg-slate-500/15 text-slate-300 ring-1 ring-slate-400/30",
+  bajo: "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/30",
+  saludable: "bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-400/30",
+  sobre: "bg-rose-500/15 text-rose-300 ring-1 ring-rose-400/30",
+  sin_datos: "bg-slate-500/15 text-slate-400 ring-1 ring-slate-400/30",
+};
+
+function ProjectCostsTab({ refreshKey }: { refreshKey: number }) {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<ProjectCostStatusFilter>("all");
+  const [detailRow, setDetailRow] = useState<ProjectCostRow | null>(null);
+  const [uploaderProjectId, setUploaderProjectId] = useState<string | null>(null);
+  const [uploaderOpen, setUploaderOpen] = useState(false);
+  const [internalRefresh, setInternalRefresh] = useState(0);
+
+  // Recompute rows when localStorage changes / after upload
+  const rows = useMemo<ProjectCostRow[]>(() => {
+    if (typeof window === "undefined") return [];
+    return MOCK_PROJECTS.map(buildProjectCostRow);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey, internalRefresh]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (statusFilter !== "all" && r.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        r.deal_name.toLowerCase().includes(q) ||
+        r.vendedor_name.toLowerCase().includes(q) ||
+        r.pm_name.toLowerCase().includes(q)
+      );
+    });
+  }, [rows, search, statusFilter]);
+
+  const kpis = useMemo(() => {
+    const totalPresupuestado = rows.reduce((s, r) => s + r.total_estimado, 0);
+    const totalEjecutado = rows.reduce((s, r) => s + r.total_ejecutado, 0);
+    const withData = rows.filter((r) => r.total_estimado > 0 && r.total_ejecutado > 0);
+    const avgPct =
+      withData.length > 0
+        ? Math.round(
+            (withData.reduce((s, r) => s + r.pct_ejecucion, 0) / withData.length) * 10,
+          ) / 10
+        : 0;
+    const sobre = rows.filter((r) => r.status === "sobre").length;
+    return { totalPresupuestado, totalEjecutado, avgPct, sobre };
+  }, [rows]);
+
+  const handleUploaderApplied = useCallback(() => {
+    setInternalRefresh((x) => x + 1);
+    setUploaderOpen(false);
+  }, []);
+
+  function progressBarColor(pct: number): string {
+    if (pct === 0) return "bg-slate-700";
+    if (pct < 80) return "bg-gradient-to-r from-emerald-500 to-emerald-400";
+    if (pct <= 100) return "bg-gradient-to-r from-amber-500 to-yellow-400";
+    return "bg-gradient-to-r from-rose-500 to-pink-500";
+  }
+
+  return (
+    <div className="space-y-6 -mx-6 -my-6 px-6 py-6 min-h-[80vh] bg-gradient-to-b from-slate-950 via-indigo-950/30 to-slate-950 rounded-2xl">
+      {/* Hero */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-violet-400" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-violet-300/80">
+              Centro de Operaciones de Costos
+            </span>
+          </div>
+          <h2 className="text-2xl font-bold mt-1">
+            <span className="bg-gradient-to-r from-violet-400 to-fuchsia-400 bg-clip-text text-transparent">
+              Costos vinculados a proyectos
+            </span>
+          </h2>
+          <p className="text-sm text-slate-400 mt-1">
+            Cada gasto cargado impacta la rentabilidad del proyecto al instante.
+          </p>
+        </div>
+        <Button
+          onClick={() => {
+            setUploaderProjectId(null);
+            setUploaderOpen(true);
+          }}
+          className="gap-2 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-lg shadow-violet-900/40 border-0"
+        >
+          <Upload className="w-4 h-4" />
+          Cargar costos
+        </Button>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="relative rounded-2xl p-4 overflow-hidden bg-gradient-to-br from-indigo-950 via-blue-950 to-violet-950 ring-1 ring-violet-500/20 shadow-xl shadow-violet-900/20">
+          <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-violet-500/10 blur-3xl pointer-events-none" />
+          <div className="relative flex items-center justify-between mb-2">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-violet-300/80">
+              Total presupuestado
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-violet-500/20 flex items-center justify-center ring-1 ring-violet-400/30">
+              <Wallet className="w-3.5 h-3.5 text-violet-300" />
+            </div>
+          </div>
+          <p className="relative text-xl font-bold text-white tabular-nums">
+            {formatCurrency(kpis.totalPresupuestado)}
+          </p>
+          <p className="relative text-[10px] text-violet-300/70 mt-0.5">
+            {rows.length} proyectos abril 2026
+          </p>
+        </div>
+
+        <div className="relative rounded-2xl p-4 overflow-hidden bg-gradient-to-br from-fuchsia-950 via-rose-950 to-purple-950 ring-1 ring-fuchsia-500/20 shadow-xl shadow-fuchsia-900/20">
+          <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-fuchsia-500/10 blur-3xl pointer-events-none" />
+          <div className="relative flex items-center justify-between mb-2">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-fuchsia-300/80">
+              Total ejecutado
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-fuchsia-500/20 flex items-center justify-center ring-1 ring-fuchsia-400/30">
+              <Activity className="w-3.5 h-3.5 text-fuchsia-300" />
+            </div>
+          </div>
+          <p className="relative text-xl font-bold text-white tabular-nums">
+            {formatCurrency(kpis.totalEjecutado)}
+          </p>
+          <p className="relative text-[10px] text-fuchsia-300/70 mt-0.5">
+            Gastos reales acumulados
+          </p>
+        </div>
+
+        <div className="relative rounded-2xl p-4 overflow-hidden bg-gradient-to-br from-emerald-950 via-teal-950 to-slate-900 ring-1 ring-emerald-500/20 shadow-xl shadow-emerald-900/20">
+          <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none" />
+          <div className="relative flex items-center justify-between mb-2">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-emerald-300/80">
+              % Ejecucion promedio
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/20 flex items-center justify-center ring-1 ring-emerald-400/30">
+              <TrendingUpIcon className="w-3.5 h-3.5 text-emerald-300" />
+            </div>
+          </div>
+          <p className="relative text-xl font-bold text-white tabular-nums">
+            {kpis.avgPct}%
+          </p>
+          <p className="relative text-[10px] text-emerald-300/70 mt-0.5">
+            Real / presupuesto
+          </p>
+        </div>
+
+        <div className="relative rounded-2xl p-4 overflow-hidden bg-gradient-to-br from-rose-950 via-red-950 to-slate-900 ring-1 ring-rose-500/20 shadow-xl shadow-rose-900/20">
+          <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-rose-500/10 blur-3xl pointer-events-none" />
+          <div className="relative flex items-center justify-between mb-2">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-rose-300/80">
+              Sobre presupuesto
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-rose-500/20 flex items-center justify-center ring-1 ring-rose-400/30">
+              <AlertOctagon className="w-3.5 h-3.5 text-rose-300" />
+            </div>
+          </div>
+          <p className="relative text-xl font-bold text-white tabular-nums">
+            {kpis.sobre}
+          </p>
+          <p className="relative text-[10px] text-rose-300/70 mt-0.5">
+            requieren atencion
+          </p>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex-1 min-w-[200px] relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            type="text"
+            placeholder="Buscar proyecto, vendedor o PM..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-white/5 ring-1 ring-white/10 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-400/60"
+          />
+        </div>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {(Object.keys(PROJECT_STATUS_LABELS) as ProjectCostStatusFilter[]).map((k) => {
+            const isActive = statusFilter === k;
+            const count = k === "all" ? rows.length : rows.filter((r) => r.status === k).length;
+            return (
+              <button
+                key={k}
+                onClick={() => setStatusFilter(k)}
+                className={`text-[11px] px-2.5 py-1 rounded-full transition ${
+                  isActive
+                    ? "bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white shadow-lg shadow-violet-900/40"
+                    : "bg-white/5 text-slate-300 ring-1 ring-white/10 hover:bg-white/10"
+                }`}
+              >
+                {PROJECT_STATUS_LABELS[k]}{" "}
+                <span className="opacity-60">({count})</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="rounded-2xl bg-gradient-to-br from-slate-900/80 via-indigo-950/30 to-slate-900/80 ring-1 ring-white/10 overflow-hidden backdrop-blur-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-white/5 bg-white/[0.02]">
+                <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Proyecto
+                </th>
+                <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Vendedor
+                </th>
+                <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Venta
+                </th>
+                <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400 w-[260px]">
+                  Costos real / presupuesto
+                </th>
+                <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Margen
+                </th>
+                <th className="px-4 py-3 text-center text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Estado
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-slate-500">
+                    Sin proyectos que coincidan con el filtro
+                  </td>
+                </tr>
+              )}
+              {filtered.map((r) => {
+                const pct = r.pct_ejecucion;
+                const widthPct = Math.min(pct, 130);
+                return (
+                  <tr
+                    key={r.id}
+                    className="group border-b border-white/5 last:border-b-0 hover:bg-gradient-to-r hover:from-violet-500/[0.06] hover:via-fuchsia-500/[0.04] hover:to-transparent transition-colors cursor-pointer"
+                    onClick={() => setDetailRow(r)}
+                  >
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium text-slate-100 group-hover:text-violet-300 transition-colors line-clamp-1">
+                        {r.deal_name}
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        {r.event_date} · PM {r.pm_name}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3 text-slate-300 text-xs">{r.vendedor_name}</td>
+                    <td className="px-4 py-3 text-right font-mono text-slate-200 tabular-nums">
+                      {formatCurrency(r.venta)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px] tabular-nums">
+                          <span className="text-slate-200 font-mono">
+                            {formatCurrency(r.total_ejecutado)}
+                          </span>
+                          <span className="text-slate-500 font-mono">
+                            / {formatCurrency(r.total_estimado || 0)}
+                          </span>
+                        </div>
+                        <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full ${progressBarColor(pct)} transition-all`}
+                            style={{ width: `${widthPct}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-slate-500">
+                            {r.total_estimado > 0 ? `${pct}%` : "Sin presupuesto"}
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {r.total_ejecutado > 0 ? (
+                        <span
+                          className={`font-mono font-bold tabular-nums ${
+                            r.margen >= 30
+                              ? "text-emerald-400"
+                              : r.margen >= 15
+                              ? "text-amber-400"
+                              : "text-rose-400"
+                          }`}
+                        >
+                          {r.margen}%
+                        </span>
+                      ) : (
+                        <span className="text-slate-600 font-mono">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <Badge className={`${PROJECT_STATUS_TONE[r.status]} border-0 text-[10px]`}>
+                        {PROJECT_STATUS_LABELS[r.status]}
+                      </Badge>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Detail dialog */}
+      <Dialog
+        open={!!detailRow}
+        onOpenChange={(open) => {
+          if (!open) setDetailRow(null);
+        }}
+      >
+        {detailRow && (
+          <DialogContent className="sm:max-w-2xl bg-gradient-to-br from-slate-900 via-indigo-950/60 to-slate-900 ring-1 ring-white/10 text-white p-0 overflow-hidden">
+            <div className="px-5 pt-5 pb-3 border-b border-white/5">
+              <DialogHeader>
+                <DialogTitle className="text-base text-white">
+                  {detailRow.deal_name}
+                </DialogTitle>
+                <p className="text-[11px] text-slate-400">
+                  {detailRow.event_date} · {detailRow.vendedor_name} · PM {detailRow.pm_name}
+                </p>
+              </DialogHeader>
+            </div>
+
+            <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
+              {/* Totales */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-xl bg-white/[0.03] ring-1 ring-white/5 p-3">
+                  <p className="text-[10px] uppercase tracking-wider text-slate-500">Venta</p>
+                  <p className="text-base font-bold text-white tabular-nums mt-1">
+                    {formatCurrency(detailRow.venta)}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-white/[0.03] ring-1 ring-white/5 p-3">
+                  <p className="text-[10px] uppercase tracking-wider text-slate-500">Ejecutado</p>
+                  <p className="text-base font-bold text-fuchsia-300 tabular-nums mt-1">
+                    {formatCurrency(detailRow.total_ejecutado)}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-white/[0.03] ring-1 ring-white/5 p-3">
+                  <p className="text-[10px] uppercase tracking-wider text-slate-500">Margen</p>
+                  <p
+                    className={`text-base font-bold tabular-nums mt-1 ${
+                      detailRow.margen >= 30
+                        ? "text-emerald-400"
+                        : detailRow.margen >= 15
+                        ? "text-amber-400"
+                        : "text-rose-400"
+                    }`}
+                  >
+                    {detailRow.total_ejecutado > 0 ? `${detailRow.margen}%` : "—"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Por concepto */}
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-violet-300/80 mb-2">
+                  Detalle por concepto
+                </p>
+                <div className="rounded-xl bg-white/[0.02] ring-1 ring-white/5 overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-white/5 text-slate-400">
+                        <th className="px-3 py-2 text-left font-medium">Concepto</th>
+                        <th className="px-3 py-2 text-right font-medium">Presupuesto</th>
+                        <th className="px-3 py-2 text-right font-medium">Real</th>
+                        <th className="px-3 py-2 text-right font-medium">Var.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        { label: "Costos directos", pres: detailRow.fin.costos_presupuesto, real: detailRow.fin.costos_real },
+                        { label: "Gasolina", pres: detailRow.fin.gasolina_presupuesto, real: detailRow.fin.gasolina_real },
+                        { label: "Internet", pres: detailRow.fin.internet_presupuesto, real: detailRow.fin.internet_real },
+                        { label: "Operacion", pres: detailRow.fin.operacion_presupuesto, real: detailRow.fin.operacion_real },
+                        { label: "Instalacion", pres: detailRow.fin.instalacion_presupuesto, real: detailRow.fin.instalacion_real },
+                        { label: "Ubers", pres: detailRow.fin.ubers_presupuesto, real: detailRow.fin.ubers_real },
+                        { label: "Extras", pres: detailRow.fin.extras_presupuesto, real: detailRow.fin.extras_real },
+                        { label: "Viaticos (gasto)", pres: 0, real: detailRow.fin.viaticos_gasto },
+                      ].map((row) => {
+                        const variance = row.real - row.pres;
+                        return (
+                          <tr key={row.label} className="border-b border-white/5 last:border-b-0">
+                            <td className="px-3 py-2 text-slate-200">{row.label}</td>
+                            <td className="px-3 py-2 text-right font-mono text-slate-400">
+                              {row.pres > 0 ? formatCurrency(row.pres) : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono text-white">
+                              {row.real > 0 ? formatCurrency(row.real) : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono">
+                              {row.pres === 0 && row.real === 0 ? (
+                                <span className="text-slate-600">—</span>
+                              ) : (
+                                <span
+                                  className={
+                                    variance > 0 ? "text-rose-400" : variance < 0 ? "text-emerald-400" : "text-slate-500"
+                                  }
+                                >
+                                  {variance > 0 ? "+" : ""}
+                                  {formatCurrency(variance)}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                <Button
+                  className="gap-1 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-lg shadow-violet-900/40 border-0"
+                  onClick={() => {
+                    setUploaderProjectId(detailRow.id);
+                    setUploaderOpen(true);
+                    setDetailRow(null);
+                  }}
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  Cargar costos
+                </Button>
+                <Link
+                  href={`/projects/${detailRow.id}`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-white/5 ring-1 ring-white/10 text-slate-200 hover:bg-white/10 transition"
+                >
+                  Ver proyecto
+                  <ExternalLink className="w-3 h-3" />
+                </Link>
+              </div>
+            </div>
+          </DialogContent>
+        )}
+      </Dialog>
+
+      {/* Uploader dialog */}
+      <Dialog
+        open={uploaderOpen}
+        onOpenChange={(open) => {
+          setUploaderOpen(open);
+          if (!open) setUploaderProjectId(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl p-0 bg-transparent ring-0 border-0 shadow-none">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Cargar costos a proyecto</DialogTitle>
+          </DialogHeader>
+          <ProjectCostUploader
+            initialProjectId={uploaderProjectId ?? undefined}
+            onClose={() => setUploaderOpen(false)}
+            onApplied={handleUploaderApplied}
+          />
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 // ─── Main Page ─────────────────────────────────
 export default function CostCenterPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"name" | "cost" | "margin" | "usage">("usage");
+  const [topTab, setTopTab] = useState<"proyectos" | "catalogo">("proyectos");
+  const [refreshKey] = useState(0);
 
   const filteredProducts = PRODUCTS
     .filter((p) => categoryFilter === "all" || p.category === categoryFilter)
@@ -803,7 +1366,7 @@ export default function CostCenterPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Centro de Costos</h1>
-          <p className="text-sm text-gray-500 mt-1">Consulta de costos, proveedores y tarifario - alimentado automaticamente de proyectos reales</p>
+          <p className="text-sm text-gray-500 mt-1">Costos vinculados a proyectos, catalogo de productos, proveedores y tarifario.</p>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="secondary" className="gap-1 bg-green-50 text-green-700 border-green-200">
@@ -815,51 +1378,69 @@ export default function CostCenterPage() {
         </div>
       </div>
 
-      {/* Uploader */}
-      <CostsUploader />
+      {/* Top-level tab switch */}
+      <Tabs value={topTab} onValueChange={(v) => setTopTab(v as "proyectos" | "catalogo")}>
+        <TabsList>
+          <TabsTrigger value="proyectos" className="gap-2">
+            <FolderKanban className="w-4 h-4" />
+            Costos por Proyecto
+          </TabsTrigger>
+          <TabsTrigger value="catalogo" className="gap-2">
+            <Package className="w-4 h-4" />
+            Catalogo & Tarifario
+          </TabsTrigger>
+        </TabsList>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
-          <CardContent className="pt-4 text-center">
-            <Package className="w-5 h-5 text-blue-500 mx-auto mb-1" />
-            <p className="text-xs text-gray-500">Productos/Servicios</p>
-            <p className="text-2xl font-bold">{PRODUCTS.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 text-center">
-            <Users className="w-5 h-5 text-purple-500 mx-auto mb-1" />
-            <p className="text-xs text-gray-500">Proveedores</p>
-            <p className="text-2xl font-bold">{PROVEEDORES.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 text-center">
-            <DollarSign className="w-5 h-5 text-green-500 mx-auto mb-1" />
-            <p className="text-xs text-gray-500">Margen Promedio</p>
-            <p className="text-2xl font-bold text-green-600">{avgMargin}%</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 text-center">
-            <AlertTriangle className="w-5 h-5 text-orange-500 mx-auto mb-1" />
-            <p className="text-xs text-gray-500">Costos subiendo</p>
-            <p className="text-2xl font-bold text-orange-600">{costosSubiendo}</p>
-            <p className="text-[10px] text-gray-400">requieren atencion</p>
-          </CardContent>
-        </Card>
-      </div>
+        <TabsContent value="proyectos" className="mt-4">
+          <ProjectCostsTab refreshKey={refreshKey} />
+        </TabsContent>
 
-      {/* Main content */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
-          <Tabs defaultValue="productos">
-            <TabsList>
-              <TabsTrigger value="productos">Productos & Servicios</TabsTrigger>
-              <TabsTrigger value="proveedores">Proveedores</TabsTrigger>
-              <TabsTrigger value="tarifario">Tarifario Base</TabsTrigger>
-            </TabsList>
+        <TabsContent value="catalogo" className="mt-4 space-y-6">
+          {/* Uploader for catalog */}
+          <CostsUploader />
+
+          {/* KPIs */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Card>
+              <CardContent className="pt-4 text-center">
+                <Package className="w-5 h-5 text-blue-500 mx-auto mb-1" />
+                <p className="text-xs text-gray-500">Productos/Servicios</p>
+                <p className="text-2xl font-bold">{PRODUCTS.length}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-4 text-center">
+                <Users className="w-5 h-5 text-purple-500 mx-auto mb-1" />
+                <p className="text-xs text-gray-500">Proveedores</p>
+                <p className="text-2xl font-bold">{PROVEEDORES.length}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-4 text-center">
+                <DollarSign className="w-5 h-5 text-green-500 mx-auto mb-1" />
+                <p className="text-xs text-gray-500">Margen Promedio</p>
+                <p className="text-2xl font-bold text-green-600">{avgMargin}%</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-4 text-center">
+                <AlertTriangle className="w-5 h-5 text-orange-500 mx-auto mb-1" />
+                <p className="text-xs text-gray-500">Costos subiendo</p>
+                <p className="text-2xl font-bold text-orange-600">{costosSubiendo}</p>
+                <p className="text-[10px] text-gray-400">requieren atencion</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Catalog content */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <Tabs defaultValue="productos">
+                <TabsList>
+                  <TabsTrigger value="productos">Productos & Servicios</TabsTrigger>
+                  <TabsTrigger value="proveedores">Proveedores</TabsTrigger>
+                  <TabsTrigger value="tarifario">Tarifario Base</TabsTrigger>
+                </TabsList>
 
             {/* ── Tab: Productos ── */}
             <TabsContent value="productos" className="mt-4 space-y-4">
@@ -1075,6 +1656,8 @@ export default function CostCenterPage() {
           </Card>
         </div>
       </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

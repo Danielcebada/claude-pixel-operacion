@@ -4,9 +4,16 @@ import { useParams, useRouter } from "next/navigation";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { MOCK_PROJECTS } from "@/lib/mock-data";
 import { formatCurrency, getMarginColor, getMarginLabel } from "@/lib/types";
-import { ArrowLeft, ExternalLink, Trash2, AlertTriangle, BookCheck, Plus, X, RotateCcw, CheckCircle2, Clock, CircleDot, Circle, Database, FileText } from "lucide-react";
+import { ArrowLeft, ExternalLink, Trash2, AlertTriangle, BookCheck, Plus, X, RotateCcw, CheckCircle2, Clock, CircleDot, Circle, Database, FileText, Upload, ShieldCheck, Flame } from "lucide-react";
 import Link from "next/link";
 import { OdooStatusCard } from "@/components/machote/odoo-status-card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import ProjectCostUploader from "@/components/costs/project-cost-uploader";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -364,6 +371,9 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
   const [, setNowTick] = useState(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Uploader modal state
+  const [uploaderOpen, setUploaderOpen] = useState(false);
+
   // ── On mount: hydrate from localStorage merged with defaults ──
   useEffect(() => {
     const persisted = loadPersisted(project.id);
@@ -410,6 +420,76 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
   }, []);
 
   const computed = useMemo(() => computeAll(fin), [fin]);
+
+  // ── Alert / category progress (real / presupuesto) ──
+  const costAlert = useMemo(() => {
+    const totalReal = fin.costos_real + computed.total_gastos_real;
+    const totalPres = fin.costos_presupuesto + computed.total_gastos_presupuesto;
+    const exceededRatio = totalPres > 0 ? totalReal / totalPres : 0;
+    const margen = computed.pct_margen;
+    const hasData = totalReal > 0;
+
+    // Priority: excedido > rojo (margen<40) > amarillo (margen<60) > verde
+    if (hasData && totalPres > 0 && exceededRatio > 1.2) {
+      return {
+        kind: "rojo" as const,
+        title: "Excedido",
+        detail: `Costos reales ${Math.round(exceededRatio * 100)}% del presupuesto`,
+      };
+    }
+    if (hasData && margen > 0 && margen < 40) {
+      return {
+        kind: "rojo" as const,
+        title: "Sobre presupuesto",
+        detail: `Margen actual ${margen}%`,
+      };
+    }
+    if (hasData && margen > 0 && margen < 60) {
+      return {
+        kind: "amarillo" as const,
+        title: "Margen apretado",
+        detail: `Margen actual ${margen}%`,
+      };
+    }
+    if (presupuestoConfirmado && hasData) {
+      return {
+        kind: "verde" as const,
+        title: "Saludable",
+        detail: `Margen ${margen}% · ejecucion ${totalPres > 0 ? Math.round((totalReal / totalPres) * 100) : 0}%`,
+      };
+    }
+    if (presupuestoConfirmado) {
+      return {
+        kind: "info" as const,
+        title: "Presupuesto confirmado",
+        detail: "Sin gastos reales registrados aun",
+      };
+    }
+    return null;
+  }, [fin, computed, presupuestoConfirmado]);
+
+  const categoryProgress = useMemo(() => {
+    const cats: { label: string; pres: number; real: number }[] = [
+      { label: "Costos directos", pres: fin.costos_presupuesto, real: fin.costos_real },
+      { label: "Gasolina", pres: fin.gasolina_presupuesto, real: fin.gasolina_real },
+      { label: "Internet", pres: fin.internet_presupuesto, real: fin.internet_real },
+      { label: "Operacion", pres: fin.operacion_presupuesto, real: fin.operacion_real },
+      { label: "Instalacion", pres: fin.instalacion_presupuesto, real: fin.instalacion_real },
+      { label: "Ubers", pres: fin.ubers_presupuesto, real: fin.ubers_real },
+      { label: "Extras", pres: fin.extras_presupuesto, real: fin.extras_real },
+    ];
+    return cats
+      .filter((c) => c.pres > 0 || c.real > 0)
+      .map((c) => {
+        const pct = c.pres > 0 ? Math.round((c.real / c.pres) * 100) : c.real > 0 ? 999 : 0;
+        let tone: "green" | "yellow" | "red" | "gray" = "gray";
+        if (c.pres > 0 && pct < 80) tone = "green";
+        else if (c.pres > 0 && pct <= 100) tone = "yellow";
+        else if (c.pres === 0 && c.real > 0) tone = "red";
+        else if (pct > 100) tone = "red";
+        return { ...c, pct, tone };
+      });
+  }, [fin]);
 
   // ── Restore originals ──
   const handleRestoreOriginals = useCallback(() => {
@@ -554,13 +634,22 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
             <h1 className="text-xl font-bold text-gray-900 leading-tight flex-1 min-w-0">{project.deal_name}</h1>
-            <Link
-              href={`/contracts/new?projectId=${project.id}`}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-md transition-colors flex-shrink-0"
-            >
-              <FileText className="w-3.5 h-3.5" />
-              Generar Contrato
-            </Link>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                onClick={() => setUploaderOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700 text-white text-xs font-semibold rounded-md transition-colors shadow-sm"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                Cargar costos
+              </button>
+              <Link
+                href={`/contracts/new?projectId=${project.id}`}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-md transition-colors"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                Generar Contrato
+              </Link>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 mt-2">
             <span className={`px-2.5 py-0.5 text-xs font-medium rounded-full ${STATUS_COLORS[status] || "bg-gray-100 text-gray-600"}`}>
@@ -595,6 +684,134 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
 
       {/* ═══ WORKFLOW STEPPER ═══ */}
       <WorkflowStepper status={status} anticipoPagado={anticipoPagado} />
+
+      {/* ═══ MARGIN ALERT ═══ */}
+      {(costAlert || categoryProgress.length > 0) && (
+        <div
+          className={`rounded-xl ring-1 p-4 ${
+            costAlert?.kind === "rojo"
+              ? "bg-rose-50 ring-rose-200"
+              : costAlert?.kind === "amarillo"
+              ? "bg-amber-50 ring-amber-200"
+              : costAlert?.kind === "verde"
+              ? "bg-emerald-50 ring-emerald-200"
+              : "bg-slate-50 ring-slate-200"
+          }`}
+        >
+          {costAlert && (
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div
+                  className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                    costAlert.kind === "rojo"
+                      ? "bg-rose-500 text-white"
+                      : costAlert.kind === "amarillo"
+                      ? "bg-amber-500 text-white"
+                      : costAlert.kind === "verde"
+                      ? "bg-emerald-500 text-white"
+                      : "bg-slate-400 text-white"
+                  }`}
+                >
+                  {costAlert.kind === "rojo" ? (
+                    <Flame className="w-4 h-4" />
+                  ) : costAlert.kind === "amarillo" ? (
+                    <AlertTriangle className="w-4 h-4" />
+                  ) : costAlert.kind === "verde" ? (
+                    <ShieldCheck className="w-4 h-4" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4" />
+                  )}
+                </div>
+                <div>
+                  <p
+                    className={`text-sm font-semibold ${
+                      costAlert.kind === "rojo"
+                        ? "text-rose-800"
+                        : costAlert.kind === "amarillo"
+                        ? "text-amber-800"
+                        : costAlert.kind === "verde"
+                        ? "text-emerald-800"
+                        : "text-slate-700"
+                    }`}
+                  >
+                    {costAlert.title}
+                  </p>
+                  <p
+                    className={`text-xs mt-0.5 ${
+                      costAlert.kind === "rojo"
+                        ? "text-rose-700"
+                        : costAlert.kind === "amarillo"
+                        ? "text-amber-700"
+                        : costAlert.kind === "verde"
+                        ? "text-emerald-700"
+                        : "text-slate-500"
+                    }`}
+                  >
+                    {costAlert.detail}
+                  </p>
+                </div>
+              </div>
+              <span
+                className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full ${
+                  costAlert.kind === "rojo"
+                    ? "bg-rose-500 text-white"
+                    : costAlert.kind === "amarillo"
+                    ? "bg-amber-500 text-white"
+                    : costAlert.kind === "verde"
+                    ? "bg-emerald-500 text-white"
+                    : "bg-slate-400 text-white"
+                }`}
+              >
+                {costAlert.title}
+              </span>
+            </div>
+          )}
+
+          {categoryProgress.length > 0 && (
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {categoryProgress.map((c) => {
+                const widthPct = Math.min(c.pct, 130);
+                const barColor =
+                  c.tone === "green"
+                    ? "bg-emerald-500"
+                    : c.tone === "yellow"
+                    ? "bg-amber-500"
+                    : c.tone === "red"
+                    ? "bg-rose-500"
+                    : "bg-slate-300";
+                const dot =
+                  c.tone === "green"
+                    ? "bg-emerald-500"
+                    : c.tone === "yellow"
+                    ? "bg-amber-500"
+                    : c.tone === "red"
+                    ? "bg-rose-500"
+                    : "bg-slate-300";
+                return (
+                  <div key={c.label} className="bg-white/60 ring-1 ring-black/5 rounded-lg px-3 py-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+                        <span className="text-[11px] font-medium text-gray-700 truncate">{c.label}</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-gray-500 flex-shrink-0">
+                        {c.pres > 0 ? `${c.pct}%` : "sin pres."}
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full bg-gray-200 rounded-full overflow-hidden">
+                      <div className={`h-full ${barColor} transition-all`} style={{ width: `${widthPct}%` }} />
+                    </div>
+                    <div className="flex items-center justify-between mt-1 text-[10px] font-mono text-gray-500">
+                      <span>{formatCurrency(c.real)}</span>
+                      <span className="text-gray-400">/ {formatCurrency(c.pres)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ═══ ODOO STATUS CARD ═══ */}
       <OdooStatusCard dealName={project.deal_name} />
@@ -1115,6 +1332,41 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
           </div>
         )}
       </div>
+
+      {/* ═══ UPLOADER DIALOG ═══ */}
+      <Dialog
+        open={uploaderOpen}
+        onOpenChange={(open) => {
+          setUploaderOpen(open);
+          if (!open) {
+            // Re-hydrate from localStorage so any updates from the uploader appear instantly
+            const persisted = loadPersisted(project.id);
+            if (persisted) {
+              setFin({ ...defaultFin, ...persisted.fin });
+              if (persisted.savedAt) setSavedAt(persisted.savedAt);
+            }
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl p-0 bg-transparent ring-0 border-0 shadow-none">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Cargar costos al proyecto</DialogTitle>
+          </DialogHeader>
+          <ProjectCostUploader
+            initialProjectId={project.id}
+            onClose={() => setUploaderOpen(false)}
+            onApplied={() => {
+              // Reload financial state from storage so the table & alerts reflect new totals
+              const persisted = loadPersisted(project.id);
+              if (persisted) {
+                setFin({ ...defaultFin, ...persisted.fin });
+                if (persisted.savedAt) setSavedAt(persisted.savedAt);
+              }
+              setUploaderOpen(false);
+            }}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
