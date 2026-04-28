@@ -6,6 +6,7 @@ import { MOCK_PROJECTS } from "@/lib/mock-data";
 import { formatCurrency, getMarginColor, getMarginLabel } from "@/lib/types";
 import { ArrowLeft, ExternalLink, Trash2, AlertTriangle, BookCheck, Plus, X, RotateCcw, CheckCircle2, Clock, CircleDot, Circle, Database, FileText } from "lucide-react";
 import Link from "next/link";
+import { OdooStatusCard } from "@/components/machote/odoo-status-card";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -594,6 +595,9 @@ function ProjectDetail({ project }: { project: (typeof MOCK_PROJECTS)[number] })
 
       {/* ═══ WORKFLOW STEPPER ═══ */}
       <WorkflowStepper status={status} anticipoPagado={anticipoPagado} />
+
+      {/* ═══ ODOO STATUS CARD ═══ */}
+      <OdooStatusCard dealName={project.deal_name} />
 
       {/* ═══ CONTEXTUAL ACTION CARD ═══ */}
       {(() => {

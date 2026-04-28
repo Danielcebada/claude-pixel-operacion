@@ -91,6 +91,7 @@ const sections: NavSection[] = [
     icon: Settings,
     items: [
       { name: "Configuracion", href: "/admin", icon: Settings },
+      { name: "Odoo", href: "/admin/odoo", icon: Wallet },
     ],
   },
 ];

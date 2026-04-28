@@ -28,6 +28,7 @@ const BREADCRUMB_MAP: Record<string, string> = {
   "/reports": "Reportes",
   "/alerts": "Alertas",
   "/admin": "Configuracion",
+  "/admin/odoo": "Configuracion Odoo",
 };
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
